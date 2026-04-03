@@ -22,7 +22,14 @@ import { createInterface } from "readline";
 
 const args = process.argv.slice(2);
 const showAll = args.includes("--all") || args.includes("-a");
-const filteredArgs = args.filter((a) => a !== "--all" && a !== "-a");
+
+// NEW: support yes flag globally
+const yesFlag = args.includes("--yes") || args.includes("-y");
+
+const filteredArgs = args.filter(
+  (a) => a !== "--all" && a !== "-a" && a !== "--yes" && a !== "-y",
+);
+
 const command = filteredArgs[0];
 
 async function main() {
@@ -43,11 +50,24 @@ async function main() {
     displayPortDetail(info);
 
     if (info) {
-      // Interactive kill prompt
+      // Skip prompt if --yes
+      if (yesFlag) {
+        const success = killProcess(info.pid);
+        if (success) {
+          console.log(chalk.green(`\n  ✓ Killed PID ${info.pid}\n`));
+        } else {
+          console.log(
+            chalk.red(`\n  ✕ Failed. Try: sudo kill -9 ${info.pid}\n`),
+          );
+        }
+        return;
+      }
+
       const rl = createInterface({
         input: process.stdin,
         output: process.stdout,
       });
+
       rl.question(
         chalk.yellow(`  Kill process on :${portNum}? [y/N] `),
         (answer) => {
@@ -76,7 +96,6 @@ async function main() {
         processes = processes.filter((p) =>
           isDevProcess(p.processName, p.command),
         );
-        // Collapse Docker internal processes into one summary row
         const dockerProcs = processes.filter(
           (p) =>
             p.processName.startsWith("com.docke") ||
@@ -128,7 +147,17 @@ async function main() {
     }
 
     case "clean": {
-      const orphaned = findOrphanedProcesses();
+      // NEW: optional port argument
+      const portArg = filteredArgs[1];
+      const portNum = portArg ? parseInt(portArg, 10) : null;
+
+      let orphaned = findOrphanedProcesses();
+
+      // Filter by port if provided
+      if (portNum && !isNaN(portNum)) {
+        orphaned = orphaned.filter((p) => p.port === portNum);
+      }
+
       const killed = [];
       const failed = [];
 
@@ -137,7 +166,23 @@ async function main() {
         return;
       }
 
-      // Confirm before killing
+      const runKill = () => {
+        for (const p of orphaned) {
+          if (killProcess(p.pid)) {
+            killed.push(p.pid);
+          } else {
+            failed.push(p.pid);
+          }
+        }
+        displayCleanResults(orphaned, killed, failed);
+      };
+
+      // Skip confirmation if --yes
+      if (yesFlag) {
+        runKill();
+        return;
+      }
+
       const rl = createInterface({
         input: process.stdin,
         output: process.stdout,
@@ -149,28 +194,24 @@ async function main() {
           `  Found ${orphaned.length} orphaned/zombie process${orphaned.length === 1 ? "" : "es"}:`,
         ),
       );
+
       for (const p of orphaned) {
         console.log(
           `  ${chalk.gray("•")} :${chalk.white.bold(p.port)} — ${p.processName} ${chalk.gray(`(PID ${p.pid})`)}`,
         );
       }
+
       console.log();
 
       rl.question(chalk.yellow("  Kill all? [y/N] "), (answer) => {
         if (answer.toLowerCase() === "y") {
-          for (const p of orphaned) {
-            if (killProcess(p.pid)) {
-              killed.push(p.pid);
-            } else {
-              failed.push(p.pid);
-            }
-          }
-          displayCleanResults(orphaned, killed, failed);
+          runKill();
         } else {
           console.log(chalk.gray("\n  Aborted.\n"));
         }
         rl.close();
       });
+
       break;
     }
 
@@ -180,7 +221,6 @@ async function main() {
         displayWatchEvent(type, info);
       }, 2000);
 
-      // Handle graceful exit
       process.on("SIGINT", () => {
         clearInterval(interval);
         console.log(chalk.gray("\n\n  Stopped watching.\n"));
@@ -199,27 +239,15 @@ async function main() {
       );
       console.log();
       console.log(chalk.white("  Usage:"));
-      console.log(
-        `    ${chalk.cyan("ports")}              Show dev server ports`,
-      );
-      console.log(
-        `    ${chalk.cyan("ports --all")}        Show all listening ports`,
-      );
-      console.log(
-        `    ${chalk.cyan("ports ps")}           Show all running dev processes`,
-      );
-      console.log(
-        `    ${chalk.cyan("ports <number>")}     Detailed info about a specific port`,
-      );
-      console.log(
-        `    ${chalk.cyan("ports clean")}        Kill orphaned/zombie dev servers`,
-      );
-      console.log(
-        `    ${chalk.cyan("ports watch")}        Monitor port changes in real-time`,
-      );
-      console.log(
-        `    ${chalk.cyan("whoisonport <num>")} Alias for ports <number>`,
-      );
+      console.log(`    ${chalk.cyan("ports")}              Show dev server ports`);
+      console.log(`    ${chalk.cyan("ports --all")}        Show all listening ports`);
+      console.log(`    ${chalk.cyan("ports ps")}           Show all running dev processes`);
+      console.log(`    ${chalk.cyan("ports <number>")}     Detailed info about a specific port`);
+      console.log(`    ${chalk.cyan("ports clean")}        Kill orphaned/zombie dev servers`);
+      console.log(`    ${chalk.cyan("ports clean <port>")} Kill orphaned process on a specific port`);
+      console.log(`    ${chalk.cyan("ports clean --yes")}  Skip confirmation prompt`);
+      console.log(`    ${chalk.cyan("ports watch")}        Monitor port changes in real-time`);
+      console.log(`    ${chalk.cyan("whoisonport <num>")} Alias for ports <number>`);
       console.log();
       break;
     }
